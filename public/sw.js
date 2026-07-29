@@ -1,4 +1,4 @@
-const CACHE = "navi-shell-v3";
+const CACHE = "navi-shell-v4";
 const ROOT = new URL("./", self.registration.scope).pathname;
 const SHELL = [ROOT, `${ROOT}manifest.webmanifest`, `${ROOT}favicon.svg`];
 

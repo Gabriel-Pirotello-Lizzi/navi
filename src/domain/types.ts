@@ -95,8 +95,11 @@ export interface InstallmentPlan {
   total_cents: number;
   installment_cents: number;
   installment_count: number;
+  current_installment: number;
+  due_day: number | null;
   first_installment_on: string;
   status: "active" | "completed" | "cancelled";
+  notes: string | null;
 }
 
 export interface RecurringTemplate {
@@ -113,6 +116,8 @@ export interface RecurringTemplate {
   ends_on: string | null;
   next_due_on: string;
   is_active: boolean;
+  is_fixed: boolean;
+  notes: string | null;
 }
 
 export interface Budget {
@@ -120,6 +125,7 @@ export interface Budget {
   category_id: UUID;
   reference_month: string;
   limit_cents: number;
+  allocation_percent: number | null;
   rollover: boolean;
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Account, Transaction } from "@/src/domain/types";
-import { accountBalance, isConsumption, monthlyConsumption } from "./calculation-service";
+import type { Account, CreditCard, Invoice, RecurringTemplate, Transaction } from "@/src/domain/types";
+import { accountBalance, cycleIntelligence, isConsumption, monthlyConsumption } from "./calculation-service";
 import { splitInstallments } from "./installment-service";
 import { invoiceTotal } from "./invoice-service";
 import { parseBRL } from "./money";
@@ -73,5 +73,36 @@ describe("conceitos financeiros", () => {
     const refund = { ...baseTransaction, id: "r", kind: "refund" as const, amount_cents: 1200 };
     expect(invoiceTotal([purchase, refund])).toBe(3800);
     expect(monthlyConsumption([purchase, refund], "2026-07")).toBe(3800);
+  });
+});
+
+describe("inteligência até a fatura", () => {
+  it("soma entradas e protege fatura e saídas fixas até o dia 8", () => {
+    const card = {
+      id: "c", account_id: "a", name: "Cartão", institution: null, last_four: null,
+      limit_cents: 100000, closing_day: 1, due_day: 8, color: "#000", is_active: true,
+    } satisfies CreditCard;
+    const invoice = {
+      id: "i", credit_card_id: "c", reference_month: "2026-08-01", closing_date: null,
+      due_date: "2026-08-08", total_cents: 3000, status: "open", paid_at: null,
+      payment_account_id: null,
+    } satisfies Invoice;
+    const recurringBase = {
+      id: "r", category_id: null, account_id: "a", destination_account_id: null,
+      frequency: "monthly", day_of_month: 5, starts_on: "2026-01-05", ends_on: null,
+      next_due_on: "2026-08-05", is_active: true, is_fixed: true, notes: null,
+    } as const;
+    const recurrings: RecurringTemplate[] = [
+      { ...recurringBase, kind: "income", description: "Salário", amount_cents: 5000 },
+      { ...recurringBase, id: "e", kind: "expense", description: "Aluguel", amount_cents: 1000 },
+    ];
+    const result = cycleIntelligence({
+      profile: null, accounts: [account], cards: [card], transactions: [],
+      invoices: [invoice], recurrings, goals: [],
+    }, new Date(2026, 6, 29));
+    expect(result.dueDate).toBe("2026-08-08");
+    expect(result.availableUntilDue).toBe(11000);
+    expect(result.daysUntilDue).toBe(11);
+    expect(result.safePerDay).toBe(1000);
   });
 });

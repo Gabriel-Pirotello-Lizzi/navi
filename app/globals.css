@@ -106,6 +106,7 @@ h1 { margin: 0; color: var(--ink); font-size: clamp(28px, 4vw, 43px); letter-spa
 .panel { background: rgba(255,255,255,.96); border: 1px solid rgba(230, 236, 246, .9); border-radius: 26px; box-shadow: 0 14px 44px rgba(16, 26, 48, .055); }
 
 .hero-card { position: relative; overflow: hidden; min-height: 322px; padding: 30px; color: #fff; background: linear-gradient(135deg, #06398d 0%, #087bf5 61%, #39afff 100%); }
+.hero-card.hero-danger { background: linear-gradient(145deg, #721f35, #a63043); }
 .hero-card::before { content: ""; position: absolute; width: 420px; height: 420px; right: -160px; bottom: -265px; border: 1px solid rgba(255,255,255,.18); border-radius: 50%; box-shadow: 0 0 0 42px rgba(255,255,255,.07), 0 0 0 85px rgba(255,255,255,.045); }
 .hero-card::after { content: ""; position: absolute; width: 114px; height: 114px; top: -45px; right: 76px; background: rgba(255,255,255,.11); border-radius: 39px; transform: rotate(25deg); }
 .hero-content { position: relative; z-index: 1; }
@@ -167,6 +168,47 @@ h1 { margin: 0; color: var(--ink); font-size: clamp(28px, 4vw, 43px); letter-spa
 .insight-badge { display: grid; flex: 0 0 auto; place-items: center; width: 36px; height: 36px; color: #fff; background: var(--blue); border-radius: 12px; }
 .insight-card p { margin: 0; color: #43516a; font-size: 13px; line-height: 1.42; }
 .insight-card strong { color: var(--ink); }
+.danger-insight { background: #fff1f3; border-color: #ffd1d9; }
+.danger-insight .insight-badge { background: var(--danger); }
+
+.cycle-card { padding: 23px; }
+.cycle-card h2 { margin: 6px 0 15px; font-size: 22px; }
+.breakdown { display: grid; gap: 0; }
+.breakdown-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.breakdown-line b { color: var(--ink); white-space: nowrap; }
+.breakdown-line.total { margin-top: 3px; padding-top: 13px; color: var(--ink); font-weight: 800; }
+.breakdown-line.total b { font-size: 16px; }
+.cycle-planning { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, .85fr); gap: 35px; align-items: center; padding: 28px; background: linear-gradient(125deg, #fff, #edf7ff); border-color: #cfe6ff; }
+.cycle-planning h2 { margin: 6px 0 7px; font-size: 31px; }
+.cycle-planning p:not(.eyebrow) { margin: 0; color: var(--muted); font-size: 13px; }
+.fixed-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 18px; }
+.fixed-panel { padding: 23px; }
+.fixed-total { display: block; margin: 17px 0 10px; font-size: 28px; letter-spacing: -1px; }
+.fixed-total small, .installment-card > strong small { margin-left: 4px; color: var(--muted); font-size: 12px; }
+.editable-row { display: flex; align-items: center; gap: 11px; padding: 13px 0; border-top: 1px solid var(--line); }
+.editable-row > span { display: grid; flex: 0 0 auto; place-items: center; width: 35px; height: 35px; color: var(--blue); background: var(--blue-soft); border-radius: 11px; font-weight: 900; }
+.editable-row > div:not(.row-buttons) { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.editable-row small { color: var(--muted); }
+.editable-row > b { white-space: nowrap; font-size: 13px; }
+.row-buttons { display: flex; flex: 0 0 auto; gap: 5px; }
+.row-buttons button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; color: #65738b; border: 0; background: #eef2f7; border-radius: 9px; font-size: 14px; }
+.row-buttons button:hover { color: #fff; background: var(--blue); }
+.row-buttons button.delete:hover { background: var(--danger); }
+.installment-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.installment-card { padding: 21px; }
+.installment-top { display: flex; align-items: center; gap: 11px; }
+.installment-top > div:not(.row-buttons) { min-width: 0; flex: 1; }
+.installment-top small { color: var(--blue); font-weight: 800; }
+.installment-top h3 { overflow: hidden; margin: 3px 0 0; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.installment-icon { display: grid; place-items: center; width: 40px; height: 40px; color: #fff; background: var(--navy); border-radius: 13px; }
+.installment-card > strong { display: block; margin: 18px 0 10px; font-size: 23px; }
+.installment-card > p { margin: 10px 0 0; color: var(--muted); font-size: 11px; }
+.entity-body { min-width: 0; flex: 1; }
+.card-actions { display: flex; gap: 9px; padding-top: 12px; }
+.card-actions > * { flex: 1; }
+.ghost-danger { min-height: 40px; color: var(--danger); border: 0; background: #fff0f2; border-radius: 11px; font-size: 12px; font-weight: 800; }
+.check-field { display: flex; align-items: center; gap: 9px; color: #4e5b72; font-size: 13px; font-weight: 700; }
+.check-field input { width: 18px; height: 18px; accent-color: var(--blue); }
 
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
 .section-heading h2 { margin: 0; font-size: 24px; letter-spacing: -1px; }
@@ -336,6 +378,8 @@ th { color: var(--muted); font-size: 10px; text-transform: uppercase; }
   .dashboard-grid { grid-template-columns: 1fr; }
   .right-stack { grid-template-columns: repeat(2, minmax(0,1fr)); align-items: stretch; }
   .focus-card h2 { font-size: 23px; }
+  .cycle-planning { grid-template-columns: 1fr; }
+  .installment-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 620px) {
@@ -370,6 +414,11 @@ th { color: var(--muted); font-size: 10px; text-transform: uppercase; }
   .install-button { display: none; }
   .goals-grid { grid-template-columns: 1fr; }
   .metric-grid, .entity-grid, .budget-grid { grid-template-columns: 1fr; }
+  .fixed-grid, .installment-grid { grid-template-columns: 1fr; }
+  .cycle-planning { padding: 22px; gap: 22px; }
+  .editable-row { align-items: flex-start; flex-wrap: wrap; }
+  .editable-row > b { margin-left: 46px; }
+  .editable-row .row-buttons { margin-left: auto; }
   .toolbar { flex-direction: column; }
   .toolbar input, .toolbar select { width: 100%; }
   .settings-card { grid-template-columns: auto 1fr; }

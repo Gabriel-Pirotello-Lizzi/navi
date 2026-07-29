@@ -1,5 +1,5 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
-import type { DraftTransaction, Goal, Workspace } from "@/src/domain/types";
+import type { DraftTransaction, Goal, Transaction, Workspace } from "@/src/domain/types";
 import { parseBRL } from "./money";
 import { buildInstallmentSchedule } from "./installment-service";
 import { invoiceReferenceForPurchase } from "./invoice-service";
@@ -127,18 +127,46 @@ export async function deleteTransaction(client: SupabaseClient, id: string) {
   if (error) throw error;
 }
 
-export async function saveEntity(
+export type EditableTable =
+  | "profiles" | "accounts" | "credit_cards" | "transactions" | "budgets"
+  | "recurring_templates" | "installment_plans" | "goals";
+
+export async function upsertEntity(
   client: SupabaseClient,
-  table: "accounts" | "credit_cards" | "budgets" | "recurring_templates",
+  table: EditableTable,
   payload: Record<string, unknown>,
+  id?: string,
 ) {
-  const { error } = await client.from(table).insert(payload);
+  const query = id ? client.from(table).update(payload).eq("id", id) : client.from(table).insert(payload);
+  const { error } = await query;
   if (error) throw error;
 }
 
-export async function saveGoal(client: SupabaseClient, payload: Partial<Goal>) {
-  const { error } = await client.from("goals").insert(payload);
+export async function deleteEntity(client: SupabaseClient, table: EditableTable, id: string) {
+  const { error } = await client.from(table).delete().eq("id", id);
   if (error) throw error;
+}
+
+export async function updateTransaction(client: SupabaseClient, workspace: Workspace, transaction: Transaction, draft: DraftTransaction) {
+  const amountCents = parseBRL(draft.amount);
+  if (amountCents <= 0 || !draft.description.trim()) throw new Error("Informe uma descrição e um valor válido.");
+  const category = workspace.categories.find((item) => item.id === draft.categoryId);
+  const payload = {
+    kind: draft.kind,
+    status: draft.status,
+    amount_cents: amountCents,
+    description: draft.description.trim(),
+    category: category?.name ?? transaction.category,
+    category_id: category?.id ?? null,
+    account_id: draft.accountId || null,
+    destination_account_id: draft.destinationAccountId || null,
+    credit_card_id: draft.creditCardId || null,
+    occurred_on: draft.occurredOn,
+    notes: draft.notes.trim() || null,
+  };
+  const { error } = await client.from("transactions").update(payload).eq("id", transaction.id);
+  if (error) throw error;
+  if (transaction.invoice_id) await client.rpc("recalculate_invoice_total", { target_invoice_id: transaction.invoice_id });
 }
 
 export async function contributeToGoal(client: SupabaseClient, goal: Goal, amountCents: number, accountId: string | null) {
