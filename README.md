@@ -1,98 +1,70 @@
-# vinext-starter
+# Navi
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+Um PWA de controle financeiro pessoal, com uma identidade leve em azul e sem
+mascote. O app guarda cada dado no Supabase, por usuário, e funciona em tela
+cheia no celular como um aplicativo instalável.
 
-## Prerequisites
+## O que já funciona
 
-- Node.js `>=22.13.0`
+- Cadastro e login por e-mail e senha.
+- Onboarding para renda, custos fixos e dia de recebimento.
+- Cálculo diário do valor disponível, já protegendo custos fixos.
+- Registro de entradas e saídas, categorias e histórico.
+- Metas financeiras e progresso.
+- Cache de leitura e fila de lançamentos para momentos sem conexão.
+- Instalação como PWA em Android, iPhone e desktop.
+- Dados isolados com Row Level Security no Supabase.
 
-## Quick Start
+Leitura automática de faturas fica fora deste primeiro corte: os lançamentos
+manuais já são completos e deixam o fluxo confiável. A importação de PDF, CSV
+e imagem pode entrar como a próxima etapa sem alterar o modelo de dados.
+
+## Desenvolvimento local
+
+Pré-requisito: Node.js 22 ou superior.
+
+1. Instale as dependências:
+
+   ```bash
+   npm install
+   ```
+
+2. Crie o arquivo local de configuração a partir de `.env.example` e preencha
+   as duas chaves **públicas** do seu projeto Supabase:
+
+   ```dotenv
+   VITE_NAVI_SUPABASE_URL=https://seu-projeto.supabase.co
+   VITE_NAVI_SUPABASE_ANON_KEY=sua-chave-publica
+   ```
+
+   Nunca use nem publique uma chave `service_role` ou um token pessoal do
+   Supabase. O arquivo `.env.local` é ignorado pelo Git.
+
+3. Aplique a migração em
+   `supabase/migrations/20260728000000_navi_initial_schema.sql` no SQL Editor
+   do Supabase.
+
+4. Execute:
+
+   ```bash
+   npm run dev
+   ```
+
+   Abra `http://localhost:3000`.
+
+## Verificação
 
 ```bash
-npm install
-npm run dev
 npm run build
+npm test
 ```
 
-This starter does not use `wrangler.jsonc`.
+## Publicação
 
-## Included Shape
+O build produz um app Vinext compatível com Cloudflare Workers. Defina as duas
+variáveis `VITE_NAVI_*` no ambiente de build do host, configure a URL pública
+em **Supabase > Authentication > URL Configuration** e publique. O backend e
+os dados continuam no Supabase; não há dependência de ambiente do Codex.
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+Antes de divulgar, revise o domínio público permitido no Supabase e ative a
+confirmação de e-mail conforme o seu fluxo de lançamento.
