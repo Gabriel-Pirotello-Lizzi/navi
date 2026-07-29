@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type TransactionKind = "expense" | "income";
 
@@ -84,6 +84,29 @@ function monthSpend(transactions: Transaction[]) {
     .reduce((total, item) => total + item.amount, 0);
 }
 
+type StoredTransaction = {
+  id: number;
+  title: string;
+  category: string;
+  amountCents: number;
+  kind: TransactionKind;
+  occurredOn: string;
+};
+
+function fromStoredTransaction(item: StoredTransaction): Transaction {
+  const visual = categoryIcons[item.kind === "income" ? "Renda" : item.category] ?? categoryIcons.Outros;
+  return {
+    id: item.id,
+    title: item.title,
+    category: item.category,
+    amount: item.amountCents / 100,
+    kind: item.kind,
+    icon: visual.icon,
+    tone: visual.tone,
+    day: item.occurredOn === new Date().toISOString().slice(0, 10) ? "Hoje" : "Registrado",
+  };
+}
+
 export function FinanceApp({ firstName }: { firstName: string }) {
   const [screen, setScreen] = useState<"dashboard" | "onboarding">("dashboard");
   const [onboardingStep, setOnboardingStep] = useState(0);
@@ -105,6 +128,24 @@ export function FinanceApp({ firstName }: { firstName: string }) {
   const availableToday = Math.max(0, (budget - spent) / 10);
   const usedPercent = Math.min(100, Math.round((spent / Math.max(budget, 1)) * 100));
 
+  useEffect(() => {
+    let active = true;
+
+    fetch("/api/transactions")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Could not load transactions");
+        return (await response.json()) as { transactions: StoredTransaction[] };
+      })
+      .then((data) => {
+        if (active && data.transactions.length) setTransactions(data.transactions.map(fromStoredTransaction));
+      })
+      .catch(() => {
+        // The sample data remains visible until the first saved transaction is available.
+      });
+
+    return () => { active = false; };
+  }, []);
+
   function showToast(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(""), 2800);
@@ -124,7 +165,7 @@ export function FinanceApp({ firstName }: { firstName: string }) {
     showToast("Seu plano inicial está pronto.");
   }
 
-  function submitTransaction(event: FormEvent<HTMLFormElement>) {
+  async function submitTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const amount = Number(draft.amount.replace(",", "."));
     const title = draft.title.trim();
@@ -133,22 +174,40 @@ export function FinanceApp({ firstName }: { firstName: string }) {
       return;
     }
     const visual = categoryIcons[draft.kind === "income" ? "Renda" : draft.category] ?? categoryIcons.Outros;
-    setTransactions((items) => [
-      {
-        id: Date.now(),
-        title,
-        category: draft.kind === "income" ? "Renda" : draft.category,
-        amount,
-        kind: draft.kind,
-        icon: visual.icon,
-        tone: visual.tone,
-        day: "Agora",
-      },
-      ...items,
-    ]);
+    const optimisticId = Date.now();
+    const optimisticTransaction: Transaction = {
+      id: optimisticId,
+      title,
+      category: draft.kind === "income" ? "Renda" : draft.category,
+      amount,
+      kind: draft.kind,
+      icon: visual.icon,
+      tone: visual.tone,
+      day: "Agora",
+    };
+    setTransactions((items) => [optimisticTransaction, ...items]);
     setDraft({ title: "", amount: "", category: "Mercado", kind: "expense" });
     setShowModal(false);
-    showToast(draft.kind === "income" ? "Entrada registrada com sucesso." : "Gasto registrado. Seu limite de hoje foi atualizado.");
+
+    try {
+      const response = await fetch("/api/transactions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title,
+          category: optimisticTransaction.category,
+          kind: draft.kind,
+          amountCents: Math.round(amount * 100),
+        }),
+      });
+      if (!response.ok) throw new Error("Could not save transaction");
+      const data = (await response.json()) as { transaction: StoredTransaction };
+      setTransactions((items) => [fromStoredTransaction(data.transaction), ...items.filter((item) => item.id !== optimisticId)]);
+      showToast(draft.kind === "income" ? "Entrada salva na sua conta." : "Gasto salvo. Seu limite de hoje foi atualizado.");
+    } catch {
+      setTransactions((items) => items.filter((item) => item.id !== optimisticId));
+      showToast("Não consegui salvar agora. Tente novamente em instantes.");
+    }
   }
 
   if (screen === "onboarding") {
