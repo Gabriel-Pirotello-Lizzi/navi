@@ -1,0 +1,1 @@
+CREATE INDEX `transactions_user_date_idx` ON `transactions` (`user_email`,`occurred_on`);
