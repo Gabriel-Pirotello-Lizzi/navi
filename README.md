@@ -1,72 +1,70 @@
 # Navi
 
-Um PWA de controle financeiro pessoal, com uma identidade leve em azul e sem
-mascote. O app guarda cada dado no Supabase, por usuário, e funciona em tela
-cheia no celular como um aplicativo instalável.
+PWA de controle financeiro pessoal em português do Brasil, sem mascote e com
+identidade azul. O Navi separa corretamente saldo bancário, consumo, dívida no
+cartão, saída de caixa, transferências e compromissos futuros.
 
-## O que já funciona
+## Funcionalidades
 
-- Cadastro e login por e-mail e senha.
-- Onboarding para renda, custos fixos e dia de recebimento.
-- Cálculo diário do valor disponível, já protegendo custos fixos.
-- Registro de entradas e saídas, categorias e histórico.
-- Metas financeiras e progresso.
-- Cache de leitura e fila de lançamentos para momentos sem conexão.
-- Instalação como PWA em Android, iPhone e desktop.
-- Dados isolados com Row Level Security no Supabase.
+- Autenticação e isolamento por usuário com Supabase Auth + RLS.
+- Contas com saldo consolidado e transferências sem falsa receita/despesa.
+- Cartões, faturas, pagamentos, estornos e compras parceladas.
+- Lançamentos de receitas, despesas, cartão, transferências e pagamentos.
+- Orçamentos mensais por categoria e alertas de limite excedido.
+- Receitas e despesas recorrentes.
+- Metas, contribuições e dinheiro protegido.
+- Limite diário conservador ou por fluxo de caixa.
+- Planejamento visual de 12 meses.
+- Backup JSON e exportação CSV.
+- PWA instalável com shell offline.
+- Interface responsiva: menu lateral no desktop e navegação inferior no celular.
 
-Leitura automática de faturas fica fora deste primeiro corte: os lançamentos
-manuais já são completos e deixam o fluxo confiável. A importação de PDF, CSV
-e imagem pode entrar como a próxima etapa sem alterar o modelo de dados.
+## Modelo financeiro
 
-## Desenvolvimento local
+- Valores monetários são inteiros em centavos.
+- Compra no cartão é consumo e dívida, mas não reduz a conta bancária.
+- Pagamento da fatura reduz a conta e não cria um segundo gasto.
+- Transferência apenas move saldo entre contas.
+- Estorno reduz consumo e fatura.
+- O valor disponível hoje protege faturas, planejamentos e metas antes de
+  dividir o restante pelos dias do mês.
 
-Pré-requisito: Node.js 22 ou superior.
+## Desenvolvimento
 
-1. Instale as dependências:
-
-   ```bash
-   npm install
-   ```
-
-2. Crie o arquivo local de configuração a partir de `.env.example` e preencha
-   as duas chaves **públicas** do seu projeto Supabase:
-
-   ```dotenv
-   VITE_NAVI_SUPABASE_URL=https://seu-projeto.supabase.co
-   VITE_NAVI_SUPABASE_ANON_KEY=sua-chave-publica
-   ```
-
-   Nunca use nem publique uma chave `service_role` ou um token pessoal do
-   Supabase. O arquivo `.env.local` é ignorado pelo Git.
-
-3. Aplique a migração em
-   `supabase/migrations/20260728000000_navi_initial_schema.sql` no SQL Editor
-   do Supabase.
-
-4. Execute:
-
-   ```bash
-   npm run dev
-   ```
-
-   Abra `http://localhost:3000`.
-
-## Verificação
+Requer Node.js 22 ou superior.
 
 ```bash
-npm run build
-npm test
+npm install
+npm run dev
 ```
+
+Crie `.env.local`:
+
+```dotenv
+VITE_NAVI_SUPABASE_URL=https://seu-projeto.supabase.co
+VITE_NAVI_SUPABASE_ANON_KEY=sua-chave-anon-publica
+```
+
+Aplique, em ordem, as migrações de `supabase/migrations/`. Nunca coloque
+`service_role`, senha do banco ou token pessoal no cliente ou no Git.
+
+## Qualidade
+
+```bash
+npm test
+npm run lint
+npm run build
+```
+
+Os testes cobrem dinheiro em centavos, arredondamento de parcelas, saldo de
+conta, transferência, estorno e a não duplicação do pagamento de fatura.
 
 ## Publicação
 
-O repositório inclui um workflow de GitHub Pages. A cada push em `main`, ele
-gera o PWA estático e publica uma versão em
-`https://gabriel-pirotello-lizzi.github.io/navi/`. Defina as duas variáveis
-`VITE_NAVI_*` como secrets do repositório e configure essa URL pública em
-**Supabase > Authentication > URL Configuration**. O backend e os dados
-continuam no Supabase; não há dependência de ambiente do Codex.
+O workflow de GitHub Pages compila e publica todo push em `main`:
 
-Antes de divulgar, revise o domínio público permitido no Supabase e ative a
-confirmação de e-mail conforme o seu fluxo de lançamento.
+<https://gabriel-pirotello-lizzi.github.io/navi/>
+
+As variáveis `VITE_NAVI_SUPABASE_URL` e `VITE_NAVI_SUPABASE_ANON_KEY` devem
+existir como secrets no GitHub. Os dados financeiros ficam somente no Supabase;
+o repositório e o bundle não contêm a planilha ou as faturas pessoais.

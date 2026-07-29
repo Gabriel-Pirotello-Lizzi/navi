@@ -1,348 +1,235 @@
-"use client";
-
 import type { User } from "@supabase/supabase-js";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import {
-  calculatePlan,
-  categories,
-  categoryVisuals,
-  moneyFromCents,
-  parseMoneyToCents,
-  profileDisplayName,
-  type Goal,
-  type PendingTransaction,
-  type Profile,
-  type Transaction,
-  type TransactionKind,
-} from "@/lib/finance";
-import { readOfflineCache, readPendingTransactions, writeOfflineCache, writePendingTransactions } from "@/lib/offline-store";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import type { DraftTransaction, Goal, Workspace } from "@/src/domain/types";
+import { availableToday, budgetProgress, monthlyConsumption, projectTwelveMonths, totalAccountBalance } from "@/src/services/calculation-service";
+import { localISODate, monthLabel, monthStart, shortDate } from "@/src/services/dates";
+import { downloadBackup, transactionsToCSV } from "@/src/services/backup-service";
+import { formatBRL, parseBRL, percent } from "@/src/services/money";
+import { contributeToGoal, deleteTransaction, loadWorkspace, saveEntity, saveGoal, saveTransaction } from "@/src/services/finance-repository";
 
-type Screen = "loading" | "setup" | "auth" | "onboarding" | "dashboard";
-type Modal = "transaction" | "goal" | null;
+type View = "Início" | "Lançamentos" | "Planejamento" | "Contas" | "Cartões" | "Orçamentos" | "Metas" | "Mais";
+type Modal = "transaction" | "account" | "card" | "budget" | "goal" | "recurring" | null;
+const emptyWorkspace: Workspace = { profile: null, accounts: [], creditCards: [], categories: [], transactions: [], invoices: [], installmentPlans: [], recurrings: [], budgets: [], goals: [] };
+const views: Array<[View, string]> = [["Início", "⌂"], ["Lançamentos", "↕"], ["Planejamento", "◎"], ["Contas", "▣"], ["Cartões", "▤"], ["Orçamentos", "◫"], ["Metas", "◇"], ["Mais", "•••"]];
+const transactionKinds = [
+  ["expense", "Despesa"], ["income", "Receita"], ["card_purchase", "Compra no cartão"], ["transfer", "Transferência"], ["card_payment", "Pagamento de fatura"],
+] as const;
 
-type InstallPromptEvent = Event & {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
-};
-
-const emptyProfile: Profile = {
-  id: "",
-  display_name: null,
-  monthly_income_cents: 0,
-  fixed_costs_cents: 0,
-  income_day: 5,
-  onboarding_completed: false,
-};
-
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function shortDate(value: string) {
-  return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short" }).format(new Date(`${value}T12:00:00`));
-}
-
-function newRequestId() {
-  return typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+function defaultDraft(): DraftTransaction {
+  return { kind: "expense", status: "paid", description: "", amount: "", categoryId: "", accountId: "", destinationAccountId: "", creditCardId: "", occurredOn: localISODate(), installmentCount: 1, notes: "" };
 }
 
 export function FinanceApp() {
-  const [screen, setScreen] = useState<Screen>(() => (!isSupabaseConfigured || !supabase ? "setup" : "loading"));
   const [user, setUser] = useState<User | null>(null);
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [goals, setGoals] = useState<Goal[]>([]);
-  const [online, setOnline] = useState(() => (typeof navigator === "undefined" ? true : navigator.onLine));
-  const [syncing, setSyncing] = useState(false);
-  const [toast, setToast] = useState("");
-  const [error, setError] = useState("");
+  const [workspace, setWorkspace] = useState<Workspace>(emptyWorkspace);
+  const [loading, setLoading] = useState(isSupabaseConfigured);
+  const [view, setView] = useState<View>("Início");
   const [modal, setModal] = useState<Modal>(null);
-  const [activeTab, setActiveTab] = useState("Hoje");
-  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
-  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
-  const [authBusy, setAuthBusy] = useState(false);
-  const [onboardingStep, setOnboardingStep] = useState(0);
-  const [incomeInput, setIncomeInput] = useState("");
-  const [fixedInput, setFixedInput] = useState("");
-  const [transactionDraft, setTransactionDraft] = useState({ description: "", amount: "", category: "Mercado", kind: "expense" as TransactionKind });
-  const [goalDraft, setGoalDraft] = useState({ title: "", amount: "", date: "" });
+  const [error, setError] = useState("");
+  const [toast, setToast] = useState("");
+  const [installPrompt, setInstallPrompt] = useState<Event & { prompt(): Promise<void> } | null>(null);
 
-  const displayName = profileDisplayName(profile, user?.user_metadata?.display_name ?? user?.email?.split("@")[0] ?? "");
-  const plan = useMemo(() => calculatePlan(profile ?? emptyProfile, transactions), [profile, transactions]);
-
-  const notify = useCallback((message: string) => {
+  const notify = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(""), 3200);
-  }, []);
+  };
 
-  const loadWorkspace = useCallback(async (activeUser: User) => {
+  const refresh = useCallback(async (activeUser: User) => {
     if (!supabase) return;
-    setSyncing(true);
+    setLoading(true);
     setError("");
     try {
-      const [profileResult, transactionsResult, goalsResult] = await Promise.all([
-        supabase.from("profiles").select("*").eq("id", activeUser.id).maybeSingle(),
-        supabase.from("transactions").select("*").order("occurred_on", { ascending: false }).order("created_at", { ascending: false }),
-        supabase.from("goals").select("*").order("created_at", { ascending: false }),
-      ]);
-      if (profileResult.error || transactionsResult.error || goalsResult.error) throw new Error("Não foi possível carregar seus dados.");
-      const loadedProfile = profileResult.data as Profile | null;
-      const loadedTransactions = (transactionsResult.data ?? []) as Transaction[];
-      const loadedGoals = (goalsResult.data ?? []) as Goal[];
-      setProfile(loadedProfile);
-      setTransactions(loadedTransactions);
-      setGoals(loadedGoals);
-      writeOfflineCache({ profile: loadedProfile, transactions: loadedTransactions, goals: loadedGoals });
-      setIncomeInput(loadedProfile?.monthly_income_cents ? String(loadedProfile.monthly_income_cents / 100).replace(".", ",") : "");
-      setFixedInput(loadedProfile?.fixed_costs_cents ? String(loadedProfile.fixed_costs_cents / 100).replace(".", ",") : "");
-      setScreen(loadedProfile?.onboarding_completed ? "dashboard" : "onboarding");
-    } catch (loadError) {
-      const cached = readOfflineCache();
-      if (cached.profile) {
-        setProfile(cached.profile);
-        setTransactions(cached.transactions);
-        setGoals(cached.goals);
-        setScreen(cached.profile.onboarding_completed ? "dashboard" : "onboarding");
-        setError("Você está vendo os últimos dados sincronizados. Novos lançamentos serão enviados quando a conexão voltar.");
-      } else {
-        setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar seus dados.");
-        setScreen("onboarding");
-      }
+      const loaded = await loadWorkspace(supabase, activeUser);
+      setWorkspace(loaded);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Não foi possível carregar os dados.");
     } finally {
-      setSyncing(false);
+      setLoading(false);
     }
   }, []);
 
-  const syncPending = useCallback(async (activeUser: User) => {
-    if (!supabase || !navigator.onLine) return;
-    const pending = readPendingTransactions();
-    if (!pending.length) return;
-    setSyncing(true);
-    const remaining: PendingTransaction[] = [];
-    for (const queued of pending) {
-      const payload = {
-        kind: queued.kind,
-        amount_cents: queued.amount_cents,
-        description: queued.description,
-        category: queued.category,
-        occurred_on: queued.occurred_on,
-      };
-      const { error: insertError } = await supabase.from("transactions").insert(payload);
-      if (insertError) remaining.push(queued);
-    }
-    writePendingTransactions(remaining);
-    if (remaining.length === 0) {
-      notify("Lançamentos offline sincronizados.");
-      await loadWorkspace(activeUser);
-    }
-    setSyncing(false);
-  }, [loadWorkspace, notify]);
-
-  useEffect(() => {
-    const captureInstall = (event: Event) => { event.preventDefault(); setInstallPrompt(event as InstallPromptEvent); };
-    const goOnline = () => { setOnline(true); if (user) void syncPending(user); };
-    const goOffline = () => setOnline(false);
-    window.addEventListener("beforeinstallprompt", captureInstall);
-    window.addEventListener("online", goOnline);
-    window.addEventListener("offline", goOffline);
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => undefined);
-    return () => {
-      window.removeEventListener("beforeinstallprompt", captureInstall);
-      window.removeEventListener("online", goOnline);
-      window.removeEventListener("offline", goOffline);
-    };
-  }, [syncPending, user]);
-
   useEffect(() => {
     if (!supabase) return;
-    let mounted = true;
     void supabase.auth.getSession().then(({ data }) => {
-      if (!mounted) return;
-      const activeUser = data.session?.user ?? null;
-      setUser(activeUser);
-      if (activeUser) void loadWorkspace(activeUser); else setScreen("auth");
+      const active = data.session?.user ?? null;
+      setUser(active);
+      if (active) void refresh(active); else setLoading(false);
     });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      const activeUser = session?.user ?? null;
-      setUser(activeUser);
-      if (activeUser) void loadWorkspace(activeUser); else setScreen("auth");
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      const active = session?.user ?? null;
+      setUser(active);
+      if (active) void refresh(active); else { setWorkspace(emptyWorkspace); setLoading(false); }
     });
-    return () => { mounted = false; listener.subscription.unsubscribe(); };
-  }, [loadWorkspace]);
+    return () => data.subscription.unsubscribe();
+  }, [refresh]);
 
-  async function handleAuth(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!supabase) return;
-    const form = new FormData(event.currentTarget);
-    const email = String(form.get("email") ?? "").trim();
-    const password = String(form.get("password") ?? "");
-    const name = String(form.get("name") ?? "").trim();
-    setAuthBusy(true);
+  useEffect(() => {
+    const capture = (event: Event) => { event.preventDefault(); setInstallPrompt(event as Event & { prompt(): Promise<void> }); };
+    window.addEventListener("beforeinstallprompt", capture);
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => undefined);
+    return () => window.removeEventListener("beforeinstallprompt", capture);
+  }, []);
+
+  async function run(action: () => Promise<unknown>, success: string) {
+    if (!user) return;
+    setLoading(true);
     setError("");
-    const result = authMode === "login"
-      ? await supabase.auth.signInWithPassword({ email, password })
-      : await supabase.auth.signUp({ email, password, options: { data: { display_name: name } } });
-    setAuthBusy(false);
-    if (result.error) { setError(result.error.message); return; }
-    if (authMode === "signup" && !result.data.session) setError("Conta criada. Confira seu e-mail para confirmar o acesso.");
+    try { await action(); await refresh(user); setModal(null); notify(success); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível concluir."); setLoading(false); }
   }
 
-  async function finishOnboarding() {
-    if (!supabase || !user) return;
-    const monthlyIncome = parseMoneyToCents(incomeInput);
-    const fixedCosts = parseMoneyToCents(fixedInput);
-    if (!monthlyIncome) { setError("Informe sua renda mensal para continuar."); return; }
-    setSyncing(true);
-    const payload = {
-      id: user.id,
-      display_name: user.user_metadata?.display_name ?? null,
-      monthly_income_cents: monthlyIncome,
-      fixed_costs_cents: fixedCosts,
-      income_day: 5,
-      onboarding_completed: true,
-    };
-    const { data, error: saveError } = await supabase.from("profiles").upsert(payload).select().single();
-    setSyncing(false);
-    if (saveError) { setError(saveError.message); return; }
-    setProfile(data as Profile);
-    writeOfflineCache({ profile: data as Profile, transactions, goals });
-    setScreen("dashboard");
-    notify("Seu plano está pronto. Vamos cuidar dele um dia por vez.");
-  }
+  if (!isSupabaseConfigured || !supabase) return <Setup />;
+  if (loading && !user) return <Loading />;
+  if (!user) return <Auth />;
 
-  async function saveTransaction(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const amountCents = parseMoneyToCents(transactionDraft.amount);
-    const description = transactionDraft.description.trim();
-    if (!description || !amountCents) { setError("Escreva uma descrição e informe um valor válido."); return; }
-    const requestId = newRequestId();
-    const payload = {
-      kind: transactionDraft.kind,
-      amount_cents: amountCents,
-      description,
-      category: transactionDraft.kind === "income" ? "Renda" : transactionDraft.category,
-      occurred_on: today(),
-    };
-    const localTransaction: Transaction = { id: `local-${requestId}`, ...payload, created_at: new Date().toISOString(), pending: true };
-    setTransactions((items) => [localTransaction, ...items]);
-    setModal(null);
-    setTransactionDraft({ description: "", amount: "", category: "Mercado", kind: "expense" });
-    setError("");
-    if (!supabase || !navigator.onLine) {
-      writePendingTransactions([...readPendingTransactions(), { requestId, ...payload }]);
-      notify("Sem internet: lançamento guardado para sincronizar.");
-      return;
-    }
-    const { data, error: saveError } = await supabase.from("transactions").insert(payload).select().single();
-    if (saveError) {
-      writePendingTransactions([...readPendingTransactions(), { requestId, ...payload }]);
-      notify("Lançamento guardado localmente; vou tentar sincronizar depois.");
-      return;
-    }
-    setTransactions((items) => [data as Transaction, ...items.filter((item) => item.id !== localTransaction.id)]);
-    notify(transactionDraft.kind === "income" ? "Entrada salva." : "Gasto salvo. Seu limite de hoje foi atualizado.");
-  }
+  const profile = workspace.profile;
+  const displayName = profile?.display_name || user.user_metadata?.display_name || user.email?.split("@")[0] || "você";
+  const plan = availableToday({ profile, accounts: workspace.accounts, transactions: workspace.transactions, invoices: workspace.invoices, goals: workspace.goals });
+  const consumption = monthlyConsumption(workspace.transactions);
+  const budgetRows = budgetProgress(workspace.budgets, workspace.categories, workspace.transactions);
+  const projections = projectTwelveMonths(profile, workspace.transactions, workspace.goals);
 
-  async function saveGoal(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!supabase) return;
-    const targetCents = parseMoneyToCents(goalDraft.amount);
-    if (!goalDraft.title.trim() || !targetCents) { setError("Dê um nome e um valor à sua meta."); return; }
-    const { data, error: saveError } = await supabase.from("goals").insert({ title: goalDraft.title.trim(), target_cents: targetCents, target_date: goalDraft.date || null }).select().single();
-    if (saveError) { setError(saveError.message); return; }
-    setGoals((items) => [data as Goal, ...items]);
-    setGoalDraft({ title: "", amount: "", date: "" });
-    setModal(null);
-    notify("Meta criada. Cada escolha agora pode te aproximar dela.");
-  }
-
-  async function signOut() {
-    if (supabase) await supabase.auth.signOut();
-    setTransactions([]); setGoals([]); setProfile(null); setUser(null); setScreen("auth");
-  }
-
-  async function installApp() {
-    if (!installPrompt) { notify("No iPhone, toque em Compartilhar e escolha “Adicionar à Tela de Início”."); return; }
-    await installPrompt.prompt();
-    const choice = await installPrompt.userChoice;
-    if (choice.outcome === "accepted") setInstallPrompt(null);
-  }
-
-  if (screen === "loading") return <main className="loading-screen"><div className="loading-mark">n</div><p>Preparando sua navegação financeira…</p></main>;
-  if (screen === "setup") return <SetupScreen />;
-  if (screen === "auth") return <AuthScreen authMode={authMode} setAuthMode={setAuthMode} onSubmit={handleAuth} busy={authBusy} error={error} />;
-  if (screen === "onboarding") return <OnboardingScreen step={onboardingStep} setStep={setOnboardingStep} income={incomeInput} setIncome={setIncomeInput} fixed={fixedInput} setFixed={setFixedInput} onFinish={finishOnboarding} error={error} />;
-
-  return (
-    <main className="app-shell">
+  return <main className="app-shell">
+    <aside className="desktop-sidebar">
+      <button className="brand sidebar-brand" onClick={() => setView("Início")}><span className="brand-mark">n</span>navi.</button>
+      <nav>{views.map(([label, icon]) => <button key={label} className={view === label ? "active" : ""} onClick={() => setView(label)}><span>{icon}</span>{label}</button>)}</nav>
+      <div className="sidebar-foot"><small>Conectado como</small><strong>{displayName}</strong><button onClick={() => void supabase.auth.signOut()}>Sair</button></div>
+    </aside>
+    <section className="app-content">
       <header className="app-bar">
-        <button className="brand" aria-label="Navi, página inicial" onClick={() => setActiveTab("Hoje")}><span className="brand-mark">n</span>navi.</button>
-        <div className="top-actions">
-          <button className="install-button" onClick={installApp}>⇩ Instalar</button>
-          <button className="avatar" aria-label="Ajustar perfil" onClick={() => { setOnboardingStep(2); setScreen("onboarding"); }}>{displayName.slice(0, 2).toUpperCase()}</button>
-        </div>
+        <button className="brand mobile-brand" onClick={() => setView("Início")}><span className="brand-mark">n</span>navi.</button>
+        <div><strong>{view}</strong><small>{monthLabel(localISODate())}</small></div>
+        <div className="top-actions"><button className="install-button" onClick={() => installPrompt ? void installPrompt.prompt() : notify("No iPhone, use Compartilhar → Adicionar à Tela de Início.")}>⇩ Instalar</button><button className="avatar" onClick={() => setView("Mais")}>{displayName.slice(0, 2).toUpperCase()}</button></div>
       </header>
       <div className="page">
-        {!online && <div className="status-banner offline"><span>●</span> Você está offline. Os lançamentos ficam guardados e sincronizam assim que a conexão voltar.</div>}
-        {online && syncing && <div className="status-banner syncing"><span>↻</span> Sincronizando seus dados…</div>}
-        {error && <div className="status-banner warning"><span>!</span>{error}</div>}
-        <section className="welcome-row"><div><p className="eyebrow">Bom dia, {displayName}</p><h1>Seu dinheiro está no rumo.</h1><p className="subcopy">Hoje é um bom dia para escolher com calma.</p></div><button className="primary-button" onClick={() => setModal("transaction")}>＋ Registrar agora</button></section>
-        <section className="dashboard-grid">
-          <div className="left-stack">
-            <article className="panel hero-card"><div className="hero-content"><p className="hero-label">Disponível hoje</p><div className="hero-amount">{moneyFromCents(plan.availableToday)} <small>/dia</small></div><p className="hero-copy">Esse é o valor livre para hoje depois das contas fixas e dos lançamentos deste mês.</p><div className="hero-footer"><span className="date-pill">● {plan.daysLeft} dias restantes neste mês</span><button className="secondary-button" onClick={() => { setOnboardingStep(2); setScreen("onboarding"); }}>Ajustar plano</button></div></div></article>
-            <article className="panel monthly-card"><div className="panel-title-row"><h2 className="panel-title">Este mês</h2><button className="text-button" onClick={() => setActiveTab("Gastos")}>Ver gastos →</button></div><div className="month-progress-number"><strong>{plan.usage}%</strong><span>do orçamento livre usado</span></div><div className="progress-track"><div className="progress-bar" style={{ width: `${plan.usage}%` }} /></div><div className="month-meta"><span><strong>{moneyFromCents(plan.expenses)}</strong> usados</span><span>{moneyFromCents(Math.max(0, plan.monthlyBudget - plan.expenses))} restantes</span></div></article>
-            <article className="panel list-card"><div className="panel-title-row"><h2 className="panel-title">Movimentações recentes</h2><button className="text-button" onClick={() => setModal("transaction")}>Adicionar</button></div><TransactionList transactions={transactions.slice(0, 5)} emptyAction={() => setModal("transaction")} /></article>
-          </div>
-          <aside className="right-stack">
-            <article className="panel focus-card"><p className="eyebrow">Seu próximo passo</p><h2>{goals.length ? "Proteger sua meta antes de qualquer impulso." : "Crie uma meta que faça o dinheiro ganhar direção."}</h2><button className="primary-button" onClick={() => setModal("goal")}>{goals.length ? "Ver e criar metas" : "Criar minha meta"}</button></article>
-            <GoalCard goal={goals[0]} openGoal={() => setModal("goal")} />
-            <article className="insight-card"><span className="insight-badge">✦</span><p><strong>Seu controle é seu.</strong><br />Os dados são isolados por conta e você pode usar o app mesmo sem conexão.</p></article>
-          </aside>
-        </section>
-        {activeTab === "Gastos" && <section className="detail-section"><div className="section-heading"><div><p className="eyebrow">Histórico real</p><h2>Todos os lançamentos</h2></div><button className="secondary-button" onClick={() => setModal("transaction")}>Novo lançamento</button></div><article className="panel full-transactions"><TransactionList transactions={transactions} emptyAction={() => setModal("transaction")} /></article></section>}
-        {activeTab === "Metas" && <section className="detail-section"><div className="section-heading"><div><p className="eyebrow">Jornada</p><h2>Suas metas</h2></div><button className="secondary-button" onClick={() => setModal("goal")}>Criar meta</button></div><div className="goals-grid">{goals.length ? goals.map((goal) => <GoalCard key={goal.id} goal={goal} openGoal={() => setModal("goal")} />) : <GoalCard openGoal={() => setModal("goal")} />}</div></section>}
+        {error && <div className="status-banner warning"><span>!</span>{error}<button onClick={() => setError("")}>×</button></div>}
+        {loading && <div className="status-banner syncing"><span>↻</span>Sincronizando seus dados…</div>}
+        {view === "Início" && <Home workspace={workspace} name={displayName} plan={plan} consumption={consumption} openTransaction={() => setModal("transaction")} go={setView} />}
+        {view === "Lançamentos" && <Transactions workspace={workspace} open={() => setModal("transaction")} remove={(id) => run(() => deleteTransaction(supabase, id), "Lançamento excluído.")} />}
+        {view === "Planejamento" && <Planning projections={projections} workspace={workspace} />}
+        {view === "Contas" && <Accounts workspace={workspace} open={() => setModal("account")} />}
+        {view === "Cartões" && <Cards workspace={workspace} open={() => setModal("card")} />}
+        {view === "Orçamentos" && <Budgets rows={budgetRows} recurrings={workspace.recurrings} openBudget={() => setModal("budget")} openRecurring={() => setModal("recurring")} />}
+        {view === "Metas" && <Goals workspace={workspace} open={() => setModal("goal")} contribute={(goal, cents) => run(() => contributeToGoal(supabase, goal, cents, workspace.accounts[0]?.id ?? null), "Valor guardado na meta.")} />}
+        {view === "Mais" && <More workspace={workspace} install={() => installPrompt ? void installPrompt.prompt() : notify("No iPhone, use Compartilhar → Adicionar à Tela de Início.")} signOut={() => void supabase.auth.signOut()} />}
       </div>
-      <nav className="bottom-nav" aria-label="Navegação principal">{[["Hoje", "◷"], ["Gastos", "▥"], ["Metas", "◎"]].map(([label, icon]) => <button key={label} className={`nav-item ${activeTab === label ? "active" : ""}`} onClick={() => setActiveTab(label)}><span>{icon}</span>{label}</button>)}<button className="nav-item" onClick={signOut}><span>◌</span>Sair</button></nav>
-      {modal === "transaction" && <TransactionModal draft={transactionDraft} setDraft={setTransactionDraft} close={() => setModal(null)} submit={saveTransaction} />}
-      {modal === "goal" && <GoalModal draft={goalDraft} setDraft={setGoalDraft} close={() => setModal(null)} submit={saveGoal} />}
-      {toast && <div className="toast" role="status"><span className="toast-check">✓</span>{toast}</div>}
-    </main>
-  );
+    </section>
+    <nav className="bottom-nav">{([["Início", "⌂"], ["Lançamentos", "↕"], ["add", "+"], ["Planejamento", "◎"], ["Mais", "•••"]] as const).map(([label, icon]) =>
+      label === "add" ? <button key={label} className="nav-add" onClick={() => setModal("transaction")}>{icon}</button> :
+      <button key={label} className={`nav-item ${view === label ? "active" : ""}`} onClick={() => setView(label)}><span>{icon}</span>{label}</button>)}</nav>
+    {modal && <EditorModal kind={modal} workspace={workspace} close={() => setModal(null)} submit={(table, payload, message) => run(() =>
+      table === "transactions" ? saveTransaction(supabase, workspace, payload as DraftTransaction) :
+      table === "goals" ? saveGoal(supabase, payload as Partial<Goal>) :
+      saveEntity(supabase, table, payload as Record<string, unknown>), message)} />}
+    {toast && <div className="toast"><span className="toast-check">✓</span>{toast}</div>}
+  </main>;
 }
 
-function SetupScreen() {
-  return <main className="auth-layout"><section className="auth-card setup-card"><div className="brand"><span className="brand-mark">n</span>navi.</div><p className="eyebrow">Conexão necessária</p><h1>Falta conectar o seu Supabase.</h1><p className="subcopy">O aplicativo está pronto. Adicione a URL e a chave anon pública do projeto no arquivo <code>.env.local</code> para ativar cadastro, dados e sincronização.</p><div className="setup-code">VITE_NAVI_SUPABASE_URL=…<br />VITE_NAVI_SUPABASE_ANON_KEY=…</div><p className="auth-note">Essas chaves são públicas do cliente. Nunca coloque uma chave <em>service_role</em> no aplicativo.</p></section></main>;
+function Home({ workspace, name, plan, consumption, openTransaction, go }: {
+  workspace: Workspace; name: string; plan: ReturnType<typeof availableToday>; consumption: number; openTransaction(): void; go(view: View): void;
+}) {
+  const recent = workspace.transactions.slice(0, 5);
+  return <>
+    <section className="welcome-row"><div><p className="eyebrow">Olá, {name}</p><h1>Seu dinheiro, mais leve.</h1><p className="subcopy">Saldo, compromissos e escolhas sem misturar os conceitos.</p></div><button className="primary-button" onClick={openTransaction}>＋ Registrar agora</button></section>
+    <section className="dashboard-grid"><div className="left-stack">
+      <article className="panel hero-card"><div className="hero-content"><p className="hero-label">Disponível hoje</p><div className="hero-amount">{formatBRL(plan.availableToday)} <small>/dia</small></div><p className="hero-copy">Valor livre após proteger faturas, compromissos planejados e metas.</p><div className="hero-footer"><span className="date-pill">● {plan.daysLeft} dias no mês</span><button className="secondary-button" onClick={() => go("Planejamento")}>Ver cálculo</button></div></div></article>
+      <div className="metric-grid">
+        <Metric label="Saldo em contas" value={formatBRL(plan.cash)} note="dinheiro disponível" />
+        <Metric label="Dívida nos cartões" value={formatBRL(plan.debt)} note="não reduz o saldo até pagar" />
+        <Metric label="Consumo do mês" value={formatBRL(consumption)} note="compras + despesas − estornos" />
+      </div>
+      <article className="panel list-card"><Title title="Movimentações recentes" action="Ver tudo" onAction={() => go("Lançamentos")} /><TransactionList items={recent} /></article>
+    </div><aside className="right-stack">
+      <article className="panel focus-card"><p className="eyebrow">Próximo passo</p><h2>{workspace.goals.length ? "Continue protegendo o que importa." : "Dê um destino ao seu dinheiro."}</h2><button className="primary-button" onClick={() => go("Metas")}>Ver metas</button></article>
+      <article className="panel summary-card"><Title title="Faturas" action="Abrir" onAction={() => go("Cartões")} />{workspace.invoices.slice(0, 3).map((item) => <div className="summary-line" key={item.id}><span>{monthLabel(item.reference_month)}</span><strong>{formatBRL(item.total_cents)}</strong><small className={`status ${item.status}`}>{item.status === "paid" ? "paga" : item.status === "closed" ? "fechada" : "aberta"}</small></div>)}</article>
+      <article className="insight-card"><span className="insight-badge">i</span><p><strong>Sem dupla contagem.</strong><br />Pagar a fatura reduz a conta, mas não vira um segundo gasto.</p></article>
+    </aside></section>
+  </>;
 }
 
-function AuthScreen({ authMode, setAuthMode, onSubmit, busy, error }: { authMode: "login" | "signup"; setAuthMode: (mode: "login" | "signup") => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; busy: boolean; error: string }) {
-  return <main className="auth-layout"><section className="auth-card"><div className="brand"><span className="brand-mark">n</span>navi.</div><p className="eyebrow">Seu dinheiro, seu espaço</p><h1>{authMode === "login" ? "Que bom ter você de volta." : "Vamos organizar sua vida financeira."}</h1><p className="subcopy">{authMode === "login" ? "Entre para ver os dados que só pertencem a você." : "Crie sua conta. Leva menos de um minuto."}</p><form className="form-grid auth-form" onSubmit={onSubmit}>{authMode === "signup" && <div className="field"><label htmlFor="name">Como podemos te chamar?</label><input id="name" name="name" required placeholder="Seu nome" /></div>}<div className="field"><label htmlFor="email">E-mail</label><input id="email" name="email" type="email" required placeholder="voce@email.com" /></div><div className="field"><label htmlFor="password">Senha</label><input id="password" name="password" type="password" required minLength={6} placeholder="Mínimo de 6 caracteres" /></div>{error && <p className="form-error">{error}</p>}<button className="primary-button auth-submit" disabled={busy}>{busy ? "Aguarde…" : authMode === "login" ? "Entrar" : "Criar conta"}</button></form><p className="auth-note">{authMode === "login" ? "Ainda não tem conta?" : "Já tem conta?"} <button className="text-button" onClick={() => setAuthMode(authMode === "login" ? "signup" : "login")}>{authMode === "login" ? "Criar agora" : "Entrar"}</button></p></section></main>;
+function Transactions({ workspace, open, remove }: { workspace: Workspace; open(): void; remove(id: string): void }) {
+  const [query, setQuery] = useState("");
+  const [kind, setKind] = useState("all");
+  const items = workspace.transactions.filter((item) => (kind === "all" || item.kind === kind) && item.description.toLowerCase().includes(query.toLowerCase()));
+  return <PageHead eyebrow="Histórico real" title="Lançamentos" action="Novo lançamento" onAction={open}>
+    <div className="toolbar"><input placeholder="Buscar estabelecimento…" value={query} onChange={(e) => setQuery(e.target.value)} /><select value={kind} onChange={(e) => setKind(e.target.value)}><option value="all">Todos os tipos</option>{transactionKinds.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></div>
+    <article className="panel data-panel"><TransactionList items={items} remove={remove} /></article>
+  </PageHead>;
 }
 
-function OnboardingScreen({ step, setStep, income, setIncome, fixed, setFixed, onFinish, error }: { step: number; setStep: (value: number) => void; income: string; setIncome: (value: string) => void; fixed: string; setFixed: (value: string) => void; onFinish: () => void; error: string }) {
-  const questions = [
-    ["Pergunta rápida", "Você já organiza o seu dinheiro hoje?", ["🫠 Nem um pouco, é um caos", "🙂 Mais ou menos, tento mas falho", "😎 Sim, mas posso melhorar"]],
-    ["Quero te entender", "Dinheiro costuma ser uma preocupação no seu dia a dia?", ["😰 Toda hora, tira meu sono", "😬 Às vezes, bate ansiedade", "😌 Raramente, tá tranquilo"]],
-  ] as const;
-  if (step < 2) { const current = questions[step]; return <main className="onboarding"><div className="onboarding-frame"><div className="onboarding-top"><button className="back-button" onClick={() => setStep(Math.max(0, step - 1))}>← Voltar</button><span className="step-count">{step + 1} de 3</span></div><section className="onboarding-card"><p className="eyebrow">{current[0]}</p><h1>{current[1]}</h1><p className="subcopy">Vou usar isso apenas para adaptar a forma como explico seu plano.</p><div className="choices">{current[2].map((choice) => <button key={choice} className="choice-button" onClick={() => setStep(step + 1)}><span className="choice-emoji">{choice.slice(0, 2)}</span>{choice.slice(3)}</button>)}</div></section></div></main>; }
-  return <main className="onboarding"><div className="onboarding-frame"><div className="onboarding-top"><button className="back-button" onClick={() => setStep(1)}>← Voltar</button><span className="step-count">seu plano</span></div><section className="onboarding-card"><p className="eyebrow">Agora, seus números</p><h1>Quanto entra e quanto já tem destino?</h1><p className="subcopy">Esses valores ficam protegidos antes de eu calcular o que pode ser gasto no dia.</p><div className="form-grid onboarding-form"><div className="field"><label htmlFor="income">Renda mensal</label><div className="money-field"><span>R$</span><input id="income" inputMode="decimal" placeholder="0,00" value={income} onChange={(event) => setIncome(event.target.value)} /></div></div><div className="field"><label htmlFor="fixed">Contas fixas mensais</label><div className="money-field"><span>R$</span><input id="fixed" inputMode="decimal" placeholder="0,00" value={fixed} onChange={(event) => setFixed(event.target.value)} /></div></div>{error && <p className="form-error">{error}</p>}<button className="primary-button onboarding-finish" onClick={onFinish}>Ver meu plano →</button></div></section></div></main>;
+function Planning({ projections, workspace }: { projections: ReturnType<typeof projectTwelveMonths>; workspace: Workspace }) {
+  const max = Math.max(...projections.map((item) => Math.max(item.income, item.expenses)), 1);
+  return <PageHead eyebrow="12 meses" title="Planejamento financeiro">
+    <div className="metric-grid"><Metric label="Saldo consolidado" value={formatBRL(totalAccountBalance(workspace.accounts, workspace.transactions))} note="todas as contas" /><Metric label="Parcelamentos" value={String(workspace.installmentPlans.filter((x) => x.status === "active").length)} note="planos ativos" /><Metric label="Recorrências" value={String(workspace.recurrings.filter((x) => x.is_active).length)} note="itens ativos" /></div>
+    <article className="panel planning-chart"><Title title="Entradas e compromissos projetados" /><div className="chart-legend"><span><i className="income-dot" />Entradas</span><span><i className="expense-dot" />Saídas</span></div><div className="bars">{projections.map((item) => <div className="bar-month" key={item.month}><div className="bar-pair"><i className="bar-income" style={{ height: `${Math.max(4, item.income / max * 100)}%` }} /><i className="bar-expense" style={{ height: `${Math.max(4, item.expenses / max * 100)}%` }} /></div><small>{item.month.slice(5)}</small></div>)}</div></article>
+    <article className="panel data-panel"><Title title="Visão mensal" /><div className="table-scroll"><table><thead><tr><th>Mês</th><th>Entradas</th><th>Consumo</th><th>Metas</th><th>Saldo projetado</th></tr></thead><tbody>{projections.map((item) => <tr key={item.month}><td>{monthLabel(item.month)}</td><td className="positive">{formatBRL(item.income)}</td><td>{formatBRL(item.expenses)}</td><td>{formatBRL(item.goalsContribution)}</td><td className={item.projectedBalance >= 0 ? "positive" : "negative"}>{formatBRL(item.projectedBalance)}</td></tr>)}</tbody></table></div></article>
+  </PageHead>;
 }
 
-function TransactionList({ transactions, emptyAction }: { transactions: Transaction[]; emptyAction: () => void }) {
-  if (!transactions.length) return <div className="empty-state"><span>◎</span><strong>Ainda não tem lançamentos.</strong><p>Registre o primeiro gasto ou entrada para a navi calcular seu dia.</p><button className="secondary-button" onClick={emptyAction}>Registrar agora</button></div>;
-  return <div className="transaction-list">{transactions.map((item) => { const visual = categoryVisuals[item.category] ?? categoryVisuals.Outros; return <div key={item.id} className="transaction"><span className="transaction-icon" style={{ background: visual.tone }}>{visual.icon}</span><div className="transaction-info"><strong>{item.description}</strong><span>{item.id.startsWith("local-") ? "Aguardando conexão" : shortDate(item.occurred_on)} · {item.category}</span></div><span className={`transaction-value ${item.kind}`}>{item.kind === "income" ? "+" : "−"} {moneyFromCents(item.amount_cents)} {item.pending && <small>•</small>}</span></div>; })}</div>;
+function Accounts({ workspace, open }: { workspace: Workspace; open(): void }) {
+  return <PageHead eyebrow="Dinheiro disponível" title="Contas" action="Nova conta" onAction={open}><div className="entity-grid">{workspace.accounts.map((account) => <article className="panel entity-card" key={account.id}><span className="entity-icon" style={{ background: account.color }}>▣</span><div><small>{account.institution || account.type}</small><h2>{account.name}</h2><strong>{formatBRL(totalAccountBalance([account], workspace.transactions))}</strong><p>Saldo informado em {shortDate(account.balance_as_of)}</p></div></article>)}</div>{!workspace.accounts.length && <Empty text="Cadastre sua primeira conta para calcular o saldo real." action={open} />}</PageHead>;
 }
 
-function GoalCard({ goal, openGoal }: { goal?: Goal; openGoal: () => void }) {
-  if (!goal) return <article className="panel goal-card empty-goal"><div className="goal-cover"><strong>Um objetivo muda a rota.</strong></div><div className="goal-caption"><strong>Sem meta por enquanto</strong><span>comece aqui</span></div><p className="goal-helper">Pode ser uma reserva, uma viagem ou quitar algo que está pesando.</p><button className="secondary-button wide-button" onClick={openGoal}>Criar minha meta</button></article>;
-  const percentage = Math.min(100, Math.round((goal.saved_cents / goal.target_cents) * 100));
-  return <article className="panel goal-card"><div className="goal-cover"><strong>{goal.title}</strong></div><div className="goal-caption"><strong>{moneyFromCents(goal.saved_cents)} de {moneyFromCents(goal.target_cents)}</strong><span>{percentage}%</span></div><div className="progress-track"><div className="progress-bar" style={{ width: `${percentage}%` }} /></div><div className="month-meta"><span>{goal.target_date ? `meta para ${shortDate(goal.target_date)}` : "sem data definida"}</span><button className="text-button" onClick={openGoal}>Nova meta</button></div></article>;
+function Cards({ workspace, open }: { workspace: Workspace; open(): void }) {
+  return <PageHead eyebrow="Dívidas e vencimentos" title="Cartões e faturas" action="Novo cartão" onAction={open}><div className="entity-grid">{workspace.creditCards.map((card) => { const invoices = workspace.invoices.filter((i) => i.credit_card_id === card.id); return <article className="panel card-entity" key={card.id}><div className="credit-card" style={{ background: card.color }}><small>{card.institution || "Navi"}</small><strong>{card.name}</strong><span>•••• {card.last_four || "••••"}</span></div><div className="card-meta"><span>Vence dia {card.due_day}</span><strong>{formatBRL(invoices.filter(i => i.status !== "paid").reduce((sum, i) => sum + i.total_cents, 0))} em aberto</strong></div></article>})}</div><article className="panel data-panel"><Title title="Faturas importadas" /><div className="table-scroll"><table><thead><tr><th>Referência</th><th>Vencimento</th><th>Total</th><th>Status</th></tr></thead><tbody>{workspace.invoices.map((invoice) => <tr key={invoice.id}><td>{monthLabel(invoice.reference_month)}</td><td>{shortDate(invoice.due_date)}</td><td>{formatBRL(invoice.total_cents)}</td><td><span className={`status ${invoice.status}`}>{invoice.status === "paid" ? "Paga" : invoice.status === "closed" ? "Fechada" : "Aberta"}</span></td></tr>)}</tbody></table></div></article></PageHead>;
 }
 
-function TransactionModal({ draft, setDraft, close, submit }: { draft: { description: string; amount: string; category: string; kind: TransactionKind }; setDraft: (draft: { description: string; amount: string; category: string; kind: TransactionKind }) => void; close: () => void; submit: (event: FormEvent<HTMLFormElement>) => void }) {
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) close(); }}><form className="modal" onSubmit={submit}><div className="modal-header"><div><h2>Novo lançamento</h2><p>Registre agora. Se estiver offline, eu envio depois.</p></div><button className="close-button" type="button" aria-label="Fechar" onClick={close}>×</button></div><div className="type-switch"><button type="button" className={draft.kind === "expense" ? "active" : ""} onClick={() => setDraft({ ...draft, kind: "expense" })}>Saída</button><button type="button" className={draft.kind === "income" ? "active" : ""} onClick={() => setDraft({ ...draft, kind: "income" })}>Entrada</button></div><div className="form-grid"><div className="field"><label htmlFor="description">O que foi?</label><input id="description" value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="Ex.: almoço, salário, Uber" autoFocus /></div><div className="field"><label htmlFor="amount">Valor</label><div className="money-field"><span>R$</span><input id="amount" inputMode="decimal" value={draft.amount} onChange={(event) => setDraft({ ...draft, amount: event.target.value })} placeholder="0,00" /></div></div>{draft.kind === "expense" && <div className="field"><label htmlFor="category">Categoria</label><select id="category" value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })}>{categories.map((category) => <option key={category}>{category}</option>)}</select></div>}</div><div className="form-actions"><button className="secondary-button" type="button" onClick={close}>Cancelar</button><button className="primary-button" type="submit">Salvar lançamento</button></div></form></div>;
+function Budgets({ rows, recurrings, openBudget, openRecurring }: { rows: ReturnType<typeof budgetProgress>; recurrings: Workspace["recurrings"]; openBudget(): void; openRecurring(): void }) {
+  return <PageHead eyebrow="Limites honestos" title="Orçamentos" action="Novo orçamento" onAction={openBudget}><div className="budget-grid">{rows.map((row) => <article className="panel budget-card" key={row.id}><Title title={row.name} /><strong>{formatBRL(row.spent)} <small>de {formatBRL(row.limit_cents)}</small></strong><div className="progress-track"><div className={`progress-bar ${row.usage > 100 ? "over" : ""}`} style={{ width: `${Math.min(100, row.usage)}%` }} /></div><p className={row.remaining < 0 ? "negative" : "muted"}>{row.remaining >= 0 ? `${formatBRL(row.remaining)} restantes` : `${formatBRL(Math.abs(row.remaining))} acima do limite`}</p></article>)}</div><div className="section-heading spaced"><div><p className="eyebrow">Automação</p><h2>Recorrências</h2></div><button className="secondary-button" onClick={openRecurring}>Nova recorrência</button></div><article className="panel data-panel">{recurrings.map((item) => <div className="recurring-row" key={item.id}><span>{item.kind === "income" ? "↗" : "↘"}</span><div><strong>{item.description}</strong><small>Todo mês · próximo dia {shortDate(item.next_due_on)}</small></div><b>{formatBRL(item.amount_cents)}</b></div>)}</article></PageHead>;
 }
 
-function GoalModal({ draft, setDraft, close, submit }: { draft: { title: string; amount: string; date: string }; setDraft: (draft: { title: string; amount: string; date: string }) => void; close: () => void; submit: (event: FormEvent<HTMLFormElement>) => void }) {
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) close(); }}><form className="modal" onSubmit={submit}><div className="modal-header"><div><h2>Nova meta</h2><p>Um destino claro deixa as escolhas do mês mais fáceis.</p></div><button className="close-button" type="button" aria-label="Fechar" onClick={close}>×</button></div><div className="form-grid"><div className="field"><label htmlFor="goal-title">Qual é o objetivo?</label><input id="goal-title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Ex.: minha reserva" autoFocus /></div><div className="field"><label htmlFor="goal-amount">Quanto quer juntar?</label><div className="money-field"><span>R$</span><input id="goal-amount" inputMode="decimal" value={draft.amount} onChange={(event) => setDraft({ ...draft, amount: event.target.value })} placeholder="0,00" /></div></div><div className="field"><label htmlFor="goal-date">Data alvo (opcional)</label><input id="goal-date" type="date" value={draft.date} onChange={(event) => setDraft({ ...draft, date: event.target.value })} /></div></div><div className="form-actions"><button className="secondary-button" type="button" onClick={close}>Cancelar</button><button className="primary-button" type="submit">Criar meta</button></div></form></div>;
+function Goals({ workspace, open, contribute }: { workspace: Workspace; open(): void; contribute(goal: Goal, cents: number): void }) {
+  return <PageHead eyebrow="Jornada" title="Metas" action="Nova meta" onAction={open}><div className="goals-grid">{workspace.goals.map((goal) => { const progress = percent(goal.saved_cents, goal.target_cents); return <article className="panel goal-card" key={goal.id}><div className="goal-cover" style={{ background: goal.color }}><strong>{goal.title}</strong></div><div className="goal-caption"><strong>{formatBRL(goal.saved_cents)} de {formatBRL(goal.target_cents)}</strong><span>{progress}%</span></div><div className="progress-track"><div className="progress-bar" style={{ width: `${progress}%` }} /></div><p className="muted">{goal.status === "completed" ? "Meta concluída" : goal.target_date ? `Alvo: ${shortDate(goal.target_date)}` : "Sem data alvo"}</p>{goal.status !== "completed" && <button className="secondary-button wide-button" onClick={() => { const value = prompt("Quanto deseja guardar?"); const cents = parseBRL(value || ""); if (cents > 0) contribute(goal, cents); }}>Guardar agora</button>}</article>})}</div>{!workspace.goals.length && <Empty text="Crie uma meta para proteger dinheiro antes de gastar." action={open} />}</PageHead>;
+}
+
+function More({ workspace, install, signOut }: { workspace: Workspace; install(): void; signOut(): void }) {
+  const downloadCSV = () => { const blob = new Blob([transactionsToCSV(workspace)], { type: "text/csv;charset=utf-8" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "navi-lancamentos.csv"; a.click(); URL.revokeObjectURL(url); };
+  return <PageHead eyebrow="Controle e portabilidade" title="Mais"><div className="settings-grid">
+    <article className="panel settings-card"><span>⇩</span><div><h2>Backup completo</h2><p>Baixe seus dados em JSON para guardar ou restaurar depois.</p></div><button className="secondary-button" onClick={() => downloadBackup(workspace)}>Baixar JSON</button></article>
+    <article className="panel settings-card"><span>▦</span><div><h2>Exportar lançamentos</h2><p>Arquivo CSV compatível com planilhas.</p></div><button className="secondary-button" onClick={downloadCSV}>Baixar CSV</button></article>
+    <article className="panel settings-card"><span>⌂</span><div><h2>Instalar aplicativo</h2><p>Use o Navi como app no celular ou computador.</p></div><button className="secondary-button" onClick={install}>Instalar PWA</button></article>
+    <article className="panel settings-card"><span>◌</span><div><h2>Privacidade</h2><p>Dados separados por usuário com regras de acesso no Supabase.</p></div><button className="secondary-button" onClick={signOut}>Sair da conta</button></article>
+  </div></PageHead>;
+}
+
+function EditorModal({ kind, workspace, close, submit }: { kind: NonNullable<Modal>; workspace: Workspace; close(): void; submit(table: "transactions" | "accounts" | "credit_cards" | "budgets" | "recurring_templates" | "goals", payload: DraftTransaction | Record<string, unknown>, message: string): void }) {
+  const [draft, setDraft] = useState(defaultDraft);
+  const title = { transaction: "Novo lançamento", account: "Nova conta", card: "Novo cartão", budget: "Novo orçamento", goal: "Nova meta", recurring: "Nova recorrência" }[kind];
+  function handle(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const form = new FormData(event.currentTarget);
+    if (kind === "transaction") { submit("transactions", { ...draft, categoryId: draft.categoryId || workspace.categories[0]?.id || "", accountId: draft.accountId || workspace.accounts[0]?.id || "" }, "Lançamento salvo."); return; }
+    if (kind === "account") submit("accounts", { name: form.get("name"), type: form.get("type"), initial_balance_cents: parseBRL(String(form.get("amount"))), balance_as_of: localISODate(), color: "#0b6cf0", icon: "wallet" }, "Conta criada.");
+    if (kind === "card") submit("credit_cards", { name: form.get("name"), account_id: form.get("account_id") || null, limit_cents: parseBRL(String(form.get("amount"))), due_day: Number(form.get("day")), closing_day: form.get("closing") ? Number(form.get("closing")) : null, color: "#111827" }, "Cartão criado.");
+    if (kind === "budget") submit("budgets", { category_id: form.get("category_id"), reference_month: monthStart(), limit_cents: parseBRL(String(form.get("amount"))) }, "Orçamento criado.");
+    if (kind === "goal") submit("goals", { title: form.get("name"), target_cents: parseBRL(String(form.get("amount"))), saved_cents: 0, target_date: form.get("date") || null, monthly_contribution_cents: parseBRL(String(form.get("monthly"))), protected: true, color: "#0b6cf0" }, "Meta criada.");
+    if (kind === "recurring") submit("recurring_templates", { kind: form.get("recurring_kind"), description: form.get("name"), amount_cents: parseBRL(String(form.get("amount"))), category_id: form.get("category_id") || null, account_id: form.get("account_id") || null, frequency: "monthly", day_of_month: Number(form.get("day")), starts_on: localISODate(), next_due_on: localISODate() }, "Recorrência criada.");
+  }
+  return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}><form className="modal" onSubmit={handle}><div className="modal-header"><div><h2>{title}</h2><p>Os dados serão salvos na sua conta.</p></div><button type="button" className="close-button" onClick={close}>×</button></div>
+    {kind === "transaction" ? <div className="form-grid"><Field label="Tipo"><select value={draft.kind} onChange={(e) => setDraft({ ...draft, kind: e.target.value as DraftTransaction["kind"] })}>{transactionKinds.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></Field><Field label="Descrição"><input required value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></Field><Field label="Valor"><input required inputMode="decimal" placeholder="0,00" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: e.target.value })} /></Field><Field label="Categoria"><select value={draft.categoryId} onChange={(e) => setDraft({ ...draft, categoryId: e.target.value })}><option value="">Selecione</option>{workspace.categories.filter(c => c.kind !== "income").map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>{draft.kind === "card_purchase" ? <><Field label="Cartão"><select required value={draft.creditCardId} onChange={(e) => setDraft({ ...draft, creditCardId: e.target.value })}><option value="">Selecione</option>{workspace.creditCards.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field><Field label="Parcelas"><input type="number" min="1" max="60" value={draft.installmentCount} onChange={(e) => setDraft({ ...draft, installmentCount: Number(e.target.value) })} /></Field></> : <Field label={draft.kind === "transfer" ? "Conta de origem" : "Conta"}><select value={draft.accountId} onChange={(e) => setDraft({ ...draft, accountId: e.target.value })}><option value="">Selecione</option>{workspace.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></Field>}{draft.kind === "transfer" && <Field label="Conta de destino"><select value={draft.destinationAccountId} onChange={(e) => setDraft({ ...draft, destinationAccountId: e.target.value })}><option value="">Selecione</option>{workspace.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></Field>}<Field label="Data"><input type="date" value={draft.occurredOn} onChange={(e) => setDraft({ ...draft, occurredOn: e.target.value })} /></Field></div> :
+    <div className="form-grid"><Field label={kind === "card" ? "Nome do cartão" : kind === "budget" ? "Categoria" : "Nome"}>{kind === "budget" ? <select name="category_id" required>{workspace.categories.filter(c => c.kind !== "income").map(c => <option value={c.id} key={c.id}>{c.name}</option>)}</select> : <input name="name" required />}</Field>{kind === "account" && <Field label="Tipo"><select name="type"><option value="checking">Conta corrente</option><option value="savings">Poupança</option><option value="cash">Dinheiro</option><option value="investment">Investimento</option><option value="other">Outro</option></select></Field>}{(kind === "card" || kind === "recurring") && <Field label="Conta"><select name="account_id"><option value="">Nenhuma</option>{workspace.accounts.map(a => <option value={a.id} key={a.id}>{a.name}</option>)}</select></Field>}{kind === "recurring" && <><Field label="Tipo"><select name="recurring_kind"><option value="expense">Despesa</option><option value="income">Receita</option></select></Field><Field label="Categoria"><select name="category_id">{workspace.categories.map(c => <option value={c.id} key={c.id}>{c.name}</option>)}</select></Field></>}<Field label={kind === "account" ? "Saldo atual" : kind === "goal" ? "Valor da meta" : kind === "card" ? "Limite (opcional)" : "Valor"}><input name="amount" required={kind !== "card"} inputMode="decimal" placeholder="0,00" /></Field>{kind === "card" && <><Field label="Dia de vencimento"><input name="day" type="number" min="1" max="31" required /></Field><Field label="Dia de fechamento (opcional)"><input name="closing" type="number" min="1" max="31" /></Field></>}{kind === "goal" && <><Field label="Guardar por mês"><input name="monthly" inputMode="decimal" placeholder="0,00" /></Field><Field label="Data alvo"><input name="date" type="date" /></Field></>}{kind === "recurring" && <Field label="Dia do mês"><input name="day" type="number" min="1" max="31" required /></Field>}</div>}
+    <div className="form-actions"><button type="button" className="secondary-button" onClick={close}>Cancelar</button><button className="primary-button">Salvar</button></div></form></div>;
+}
+
+function TransactionList({ items, remove }: { items: Workspace["transactions"]; remove?(id: string): void }) {
+  if (!items.length) return <Empty text="Nenhum lançamento encontrado." />;
+  return <div className="transaction-list">{items.map((item) => <div className="transaction" key={item.id}><span className="transaction-icon">{item.kind === "income" ? "↗" : item.kind === "refund" ? "↩" : item.kind === "card_purchase" ? "▤" : item.kind === "card_payment" ? "✓" : "↘"}</span><div className="transaction-info"><strong>{item.description}</strong><span>{shortDate(item.occurred_on)} · {item.category}{item.installment_count ? ` · ${item.installment_number}/${item.installment_count}` : ""}</span></div><span className={`transaction-value ${item.kind === "income" || item.kind === "refund" ? "income" : ""}`}>{item.kind === "income" || item.kind === "refund" ? "+" : item.kind === "card_payment" ? "" : "−"} {formatBRL(item.amount_cents)}</span>{remove && <button className="row-action" onClick={() => confirm("Excluir este lançamento?") && remove(item.id)}>×</button>}</div>)}</div>;
+}
+function Metric({ label, value, note }: { label: string; value: string; note: string }) { return <article className="panel metric-card"><small>{label}</small><strong>{value}</strong><span>{note}</span></article>; }
+function Title({ title, action, onAction }: { title: string; action?: string; onAction?(): void }) { return <div className="panel-title-row"><h2 className="panel-title">{title}</h2>{action && <button className="text-button" onClick={onAction}>{action} →</button>}</div>; }
+function PageHead({ eyebrow, title, action, onAction, children }: { eyebrow: string; title: string; action?: string; onAction?(): void; children: React.ReactNode }) { return <><section className="section-heading page-heading"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1></div>{action && <button className="primary-button" onClick={onAction}>＋ {action}</button>}</section>{children}</>; }
+function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="field"><span>{label}</span>{children}</label>; }
+function Empty({ text, action }: { text: string; action?(): void }) { return <div className="empty-state"><span>◇</span><strong>{text}</strong>{action && <button className="secondary-button" onClick={action}>Começar agora</button>}</div>; }
+function Loading() { return <main className="loading-screen"><div className="loading-mark">n</div><p>Organizando seu dinheiro…</p></main>; }
+function Setup() { return <main className="auth-layout"><section className="auth-card"><div className="brand"><span className="brand-mark">n</span>navi.</div><h1>Falta conectar o Supabase.</h1><p className="subcopy">Configure as variáveis públicas do projeto para ativar o app.</p></section></main>; }
+
+function Auth() {
+  const [signup, setSignup] = useState(false); const [busy, setBusy] = useState(false); const [message, setMessage] = useState("");
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (!supabase) return; const form = new FormData(event.currentTarget); setBusy(true); setMessage("");
+    const email = String(form.get("email")); const password = String(form.get("password")); const name = String(form.get("name") || "");
+    const result = signup ? await supabase.auth.signUp({ email, password, options: { data: { display_name: name } } }) : await supabase.auth.signInWithPassword({ email, password });
+    setBusy(false); if (result.error) setMessage(result.error.message); else if (signup && !result.data.session) setMessage("Conta criada. Confirme o e-mail para entrar.");
+  }
+  return <main className="auth-layout"><section className="auth-card"><div className="brand"><span className="brand-mark">n</span>navi.</div><p className="eyebrow">Seu dinheiro, seu espaço</p><h1>{signup ? "Crie sua conta." : "Que bom ter você de volta."}</h1><p className="subcopy">Seus dados ficam separados e protegidos por usuário.</p><form className="form-grid" onSubmit={submit}>{signup && <Field label="Nome"><input name="name" required /></Field>}<Field label="E-mail"><input name="email" type="email" required /></Field><Field label="Senha"><input name="password" type="password" minLength={6} required /></Field>{message && <p className="form-error">{message}</p>}<button className="primary-button" disabled={busy}>{busy ? "Aguarde…" : signup ? "Criar conta" : "Entrar"}</button></form><p className="auth-note">{signup ? "Já tem conta?" : "Ainda não tem conta?"} <button className="text-button" onClick={() => setSignup(!signup)}>{signup ? "Entrar" : "Criar agora"}</button></p></section></main>;
 }
