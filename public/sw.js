@@ -1,5 +1,6 @@
-const CACHE = "navi-shell-v1";
-const SHELL = ["/", "/manifest.webmanifest", "/favicon.svg"];
+const CACHE = "navi-shell-v2";
+const ROOT = new URL("./", self.registration.scope).pathname;
+const SHELL = [ROOT, `${ROOT}manifest.webmanifest`, `${ROOT}favicon.svg`];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -21,6 +22,6 @@ self.addEventListener("fetch", (event) => {
         }
         return response;
       })
-      .catch(async () => (await caches.match(request)) || (request.mode === "navigate" ? caches.match("/") : Response.error()))
+      .catch(async () => (await caches.match(request)) || (request.mode === "navigate" ? caches.match(ROOT) : Response.error()))
   );
 });

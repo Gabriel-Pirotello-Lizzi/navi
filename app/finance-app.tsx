@@ -146,7 +146,7 @@ export function FinanceApp() {
     window.addEventListener("beforeinstallprompt", captureInstall);
     window.addEventListener("online", goOnline);
     window.addEventListener("offline", goOffline);
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => undefined);
     return () => {
       window.removeEventListener("beforeinstallprompt", captureInstall);
       window.removeEventListener("online", goOnline);

@@ -3,11 +3,12 @@
   "short_name": "Navi",
   "description": "Seu dinheiro, mais claro todos os dias.",
   "lang": "pt-BR",
-  "start_url": "/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#f5f7fb",
   "theme_color": "#087bf5",
   "icons": [
-    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    { "src": "./favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
 }

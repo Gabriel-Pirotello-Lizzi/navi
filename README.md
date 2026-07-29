@@ -61,10 +61,12 @@ npm test
 
 ## Publicação
 
-O build produz um app Vinext compatível com Cloudflare Workers. Defina as duas
-variáveis `VITE_NAVI_*` no ambiente de build do host, configure a URL pública
-em **Supabase > Authentication > URL Configuration** e publique. O backend e
-os dados continuam no Supabase; não há dependência de ambiente do Codex.
+O repositório inclui um workflow de GitHub Pages. A cada push em `main`, ele
+gera o PWA estático e publica uma versão em
+`https://gabriel-pirotello-lizzi.github.io/navi/`. Defina as duas variáveis
+`VITE_NAVI_*` como secrets do repositório e configure essa URL pública em
+**Supabase > Authentication > URL Configuration**. O backend e os dados
+continuam no Supabase; não há dependência de ambiente do Codex.
 
 Antes de divulgar, revise o domínio público permitido no Supabase e ative a
 confirmação de e-mail conforme o seu fluxo de lançamento.
